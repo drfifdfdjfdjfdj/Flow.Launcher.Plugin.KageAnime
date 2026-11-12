@@ -14,7 +14,7 @@ namespace KageAnime
     /// KageAnime — поиск аниме и открытие плеера на anime.hitler.site.
     /// Кеш в temp, постеры кешируются локально. API: /api/search, /api/ongoing.
     /// </summary>
-    public class KageAnime : IAsyncPlugin
+    public class KageAnime : IAsyncPlugin, IContextMenu
     {
         private const string ApiBase = "https://anime.hitler.site";
         private const string AppUrl = "https://anime.hitler.site/";
@@ -239,8 +239,7 @@ namespace KageAnime
         }
 
         public async Task<List<Result>> QueryAsync(Query query, System.Threading.CancellationToken token)
-        {
-            var q = (query.Search ?? "").Trim();
+        {            var q = (query.Search ?? "").Trim();
             var results = new List<Result>();
 
             if (string.IsNullOrEmpty(q))
@@ -339,6 +338,50 @@ namespace KageAnime
                 });
             }
             return results;
+        }
+
+        public List<Result> LoadContextMenus(Result selectedResult)
+        {
+            // Shift+Enter по тайтлу: вспомогательные действия
+            var out_ = new List<Result>();
+            string animeId = "", title = "";
+            try
+            {
+                if (selectedResult.ContextData is List<object> ctx)
+                {
+                    if (ctx.Count > 0) animeId = ctx[0]?.ToString() ?? "";
+                    if (ctx.Count > 1) title = ctx[1]?.ToString() ?? "";
+                }
+            }
+            catch { }
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                out_.Add(new Result
+                {
+                    Title = $"Искать «{title}» на сайте",
+                    SubTitle = "Страница поиска KageAnime",
+                    IcoPath = "icon.png",
+                    Action = c => { AppUrl.OpenInBrowserTab(); return true; }
+                });
+            }
+            if (!string.IsNullOrWhiteSpace(animeId))
+            {
+                out_.Add(new Result
+                {
+                    Title = "Открыть тайтл в плеере",
+                    SubTitle = "Прямая ссылка на webapp",
+                    IcoPath = "icon.png",
+                    Action = c => { SiteLink(animeId).OpenInBrowserTab(); return true; }
+                });
+            }
+            out_.Add(new Result
+            {
+                Title = "Открыть KageAnime",
+                SubTitle = AppUrl,
+                IcoPath = "icon.png",
+                Action = c => { AppUrl.OpenInBrowserTab(); return true; }
+            });
+            return out_;
         }
     }
 }
