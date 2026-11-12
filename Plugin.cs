@@ -19,16 +19,33 @@ namespace KageAnime
         private const string ApiBase = "https://anime.hitler.site";
         private const string AppUrl = "https://anime.hitler.site/";
 
-        private PluginInitContext _context;
         private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
         private readonly Dictionary<string, (DateTime at, string json)> _cache = new();
         private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
+        private const int CacheCap = 300;
 
         public async Task InitAsync(PluginInitContext context)
         {
-            _context = context;
             Directory.CreateDirectory(CacheDir());
+            SweepPosters();
             await Task.CompletedTask;
+        }
+
+        private static void SweepPosters()
+        {
+            // Сироты/переименованные постеры лежат вечно — чистим старше 7 дней
+            try
+            {
+                var dir = CacheDir();
+                if (!Directory.Exists(dir)) return;
+                var cutoff = DateTime.UtcNow - TimeSpan.FromDays(7);
+                foreach (var f in Directory.GetFiles(dir))
+                {
+                    try { if (File.GetLastWriteTimeUtc(f) < cutoff) File.Delete(f); }
+                    catch { }
+                }
+            }
+            catch { }
         }
 
         private static string CacheDir()
@@ -47,16 +64,21 @@ namespace KageAnime
             var json = await Http.GetStringAsync(url, token).ConfigureAwait(false);
             lock (_cache)
             {
+                // Колпак: distinct URL накапливаются весь сеанс Flow
+                while (_cache.Count >= CacheCap)
+                {
+                    var oldest = (string)null;
+                    var oldestAt = DateTime.MaxValue;
+                    foreach (var kv in _cache)
+                    {
+                        if (kv.Value.at < oldestAt) { oldestAt = kv.Value.at; oldest = kv.Key; }
+                    }
+                    if (oldest == null) break;
+                    _cache.Remove(oldest);
+                }
                 _cache[key] = (DateTime.UtcNow, json);
             }
             return json;
-        }
-
-        private static JsonElement Parse(JsonElement root, string prop)
-        {
-            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty(prop, out var v))
-                return v;
-            return default;
         }
 
         private async Task<List<JsonElement>> SearchAsync(string query, int limit, System.Threading.CancellationToken token)
@@ -196,17 +218,9 @@ namespace KageAnime
             var path = PosterPath(thumb);
             if (File.Exists(path))
                 return path;
-            // Синхронный добор на случай, если префетч не успел (редко)
-            try
-            {
-                var bytes = Http.GetByteArrayAsync(thumb).ConfigureAwait(false).GetAwaiter().GetResult();
-                File.WriteAllBytes(path, bytes);
-                return path;
-            }
-            catch
-            {
-                return "icon.png";
-            }
+            // Только кеш: синхронный download из QueryAsync фризил UI-поток Flow.
+            // Префетч (Task.WhenAll) уже скачал всё заранее; не успел — icon.png.
+            return "icon.png";
         }
 
         private static string SiteLink(string id)
@@ -250,6 +264,7 @@ namespace KageAnime
                     SubTitle = "Например: ka Наруто · ka ongoing · ka random",
                     IcoPath = "icon.png",
                     Score = 100,
+                    ContextData = new List<object> { "", "" },
                     Action = c => { AppUrl.OpenInBrowserTab(); return true; }
                 });
                 return results;
@@ -271,6 +286,7 @@ namespace KageAnime
                         SubTitle = AppUrl,
                         IcoPath = "icon.png",
                         Score = 10,
+                        ContextData = new List<object> { "", "" },
                         Action = c => { AppUrl.OpenInBrowserTab(); return true; }
                     });
                     return results;
@@ -282,7 +298,9 @@ namespace KageAnime
                     {
                         var json = await Http.GetStringAsync($"{ApiBase}/api/anime/random", token).ConfigureAwait(false);
                         using var doc = JsonDocument.Parse(json);
-                        results.Add(MakeAnimeResult(doc.RootElement.Clone(), 100));
+                        var rel = doc.RootElement.Clone();
+                        await PrefetchPosterAsync(ThumbOf(rel), token).ConfigureAwait(false);
+                        results.Add(MakeAnimeResult(rel, 100));
                     }
                     catch
                     {
@@ -292,6 +310,7 @@ namespace KageAnime
                             SubTitle = "Открыть KageAnime",
                             IcoPath = "icon.png",
                             Score = 100,
+                            ContextData = new List<object> { "", "" },
                             Action = c => { AppUrl.OpenInBrowserTab(); return true; }
                         });
                     }
@@ -305,6 +324,7 @@ namespace KageAnime
                     SubTitle = "Открыть поиск на KageAnime",
                     IcoPath = "icon.png",
                     Score = 1000,
+                    ContextData = new List<object> { "", q },
                     Action = c => { AppUrl.OpenInBrowserTab(); return true; }
                 });
 
@@ -322,7 +342,8 @@ namespace KageAnime
                         Title = "Ничего не найдено: " + q,
                         SubTitle = "Попробуй другое название или латиницу",
                         IcoPath = "icon.png",
-                        Score = 100
+                        Score = 100,
+                        ContextData = new List<object> { "", q }
                     });
                     return results;
                 }
@@ -332,6 +353,7 @@ namespace KageAnime
                 results.Add(new Result
                 {
                     Title = "KageAnime недоступен",
+                    ContextData = new List<object> { "", "" },
                     SubTitle = e.Message.Length > 80 ? e.Message.Substring(0, 80) : e.Message,
                     IcoPath = "icon.png",
                     Score = 100

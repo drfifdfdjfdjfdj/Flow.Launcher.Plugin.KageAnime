@@ -4,7 +4,7 @@
   "Name": "KageAnime",
   "Description": "Search anime on KageAnime and open the player directly: russian/english titles, posters, ratings, ongoing list",
   "Author": "KageAnime",
-  "Version": "1.0.2",
+  "Version": "1.0.3",
   "Language": "csharp",
   "Website": "https://anime.hitler.site",
   "IcoPath": "icon.png",
