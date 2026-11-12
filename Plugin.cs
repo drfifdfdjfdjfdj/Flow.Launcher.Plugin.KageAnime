@@ -36,7 +36,7 @@ namespace KageAnime
             return Path.Combine(Path.GetTempPath(), "kageanime_flow");
         }
 
-        private async Task<string> GetJsonCachedAsync(string url)
+        private async Task<string> GetJsonCachedAsync(string url, System.Threading.CancellationToken token)
         {
             var key = "url:" + url;
             lock (_cache)
@@ -44,7 +44,7 @@ namespace KageAnime
                 if (_cache.TryGetValue(key, out var hit) && DateTime.UtcNow - hit.at < CacheTtl)
                     return hit.json;
             }
-            var json = await Http.GetStringAsync(url).ConfigureAwait(false);
+            var json = await Http.GetStringAsync(url, token).ConfigureAwait(false);
             lock (_cache)
             {
                 _cache[key] = (DateTime.UtcNow, json);
@@ -59,10 +59,10 @@ namespace KageAnime
             return default;
         }
 
-        private async Task<List<JsonElement>> SearchAsync(string query, int limit)
+        private async Task<List<JsonElement>> SearchAsync(string query, int limit, System.Threading.CancellationToken token)
         {
             var url = $"{ApiBase}/api/search?q={Uri.EscapeDataString(query)}&limit={limit}";
-            var json = await GetJsonCachedAsync(url).ConfigureAwait(false);
+            var json = await GetJsonCachedAsync(url, token).ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             var items = new List<JsonElement>();
@@ -96,10 +96,10 @@ namespace KageAnime
             return 0;
         }
 
-        private async Task<List<JsonElement>> OngoingAsync(int limit)
+        private async Task<List<JsonElement>> OngoingAsync(int limit, System.Threading.CancellationToken token)
         {
             var url = $"{ApiBase}/api/ongoing?source=kodik&limit={limit}";
-            var json = await GetJsonCachedAsync(url).ConfigureAwait(false);
+            var json = await GetJsonCachedAsync(url, token).ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             var items = new List<JsonElement>();
@@ -150,11 +150,15 @@ namespace KageAnime
             return string.Join("  ·  ", parts);
         }
 
-        private string Icon(JsonElement it)
+        private static string ThumbOf(JsonElement it)
         {
-            var thumb = Str(it, "thumbnail");
-            if (string.IsNullOrWhiteSpace(thumb)) thumb = Str(it, "image");
-            if (string.IsNullOrWhiteSpace(thumb)) return "icon.png";
+            var t = Str(it, "thumbnail");
+            if (string.IsNullOrWhiteSpace(t)) t = Str(it, "image");
+            return t;
+        }
+
+        private static string PosterPath(string thumb)
+        {
             var dir = CacheDir();
             // Расширение из URL — Flow/WPF не всегда декодирует файлы без известного расширения (.img давал пустые иконки)
             var ext = ".jpg";
@@ -168,9 +172,31 @@ namespace KageAnime
             }
             catch { }
             var name = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(thumb))).Substring(0, 32) + ext;
-            var path = Path.Combine(dir, name);
+            return Path.Combine(dir, name);
+        }
+
+        private static async Task PrefetchPosterAsync(string thumb, System.Threading.CancellationToken token)
+        {
+            if (string.IsNullOrWhiteSpace(thumb)) return;
+            var path = PosterPath(thumb);
             if (File.Exists(path) && DateTime.UtcNow - File.GetLastWriteTimeUtc(path) < TimeSpan.FromDays(7))
+                return;
+            try
+            {
+                var bytes = await Http.GetByteArrayAsync(thumb, token).ConfigureAwait(false);
+                File.WriteAllBytes(path, bytes);
+            }
+            catch { }
+        }
+
+        private string Icon(JsonElement it)
+        {
+            var thumb = ThumbOf(it);
+            if (string.IsNullOrWhiteSpace(thumb)) return "icon.png";
+            var path = PosterPath(thumb);
+            if (File.Exists(path))
                 return path;
+            // Синхронный добор на случай, если префетч не успел (редко)
             try
             {
                 var bytes = Http.GetByteArrayAsync(thumb).ConfigureAwait(false).GetAwaiter().GetResult();
@@ -234,7 +260,9 @@ namespace KageAnime
             {
                 if (q.Equals("ongoing", StringComparison.OrdinalIgnoreCase))
                 {
-                    var ongoing = await OngoingAsync(9).ConfigureAwait(false);
+                    var ongoing = await OngoingAsync(9, token).ConfigureAwait(false);
+                    // Постеры — параллельно, а не по одному
+                    await Task.WhenAll(ongoing.Select(it => PrefetchPosterAsync(ThumbOf(it), token))).ConfigureAwait(false);
                     var i = 0;
                     foreach (var it in ongoing)
                         results.Add(MakeAnimeResult(it, 100 - i++));
@@ -253,7 +281,7 @@ namespace KageAnime
                 {
                     try
                     {
-                        var json = await Http.GetStringAsync($"{ApiBase}/api/anime/random").ConfigureAwait(false);
+                        var json = await Http.GetStringAsync($"{ApiBase}/api/anime/random", token).ConfigureAwait(false);
                         using var doc = JsonDocument.Parse(json);
                         results.Add(MakeAnimeResult(doc.RootElement.Clone(), 100));
                     }
@@ -271,12 +299,24 @@ namespace KageAnime
                     return results;
                 }
 
-                var found = await SearchAsync(q, 9).ConfigureAwait(false);
+                // Что ввел — первым пунктом, сразу видно запрос
+                results.Add(new Result
+                {
+                    Title = $"🔍 «{q}»",
+                    SubTitle = "Открыть поиск на KageAnime",
+                    IcoPath = "icon.png",
+                    Score = 1000,
+                    Action = c => { AppUrl.OpenInBrowserTab(); return true; }
+                });
+
+                var found = await SearchAsync(q, 9, token).ConfigureAwait(false);
+                // Постеры — параллельно, а не по одному
+                await Task.WhenAll(found.Select(it => PrefetchPosterAsync(ThumbOf(it), token))).ConfigureAwait(false);
                 var idx = 0;
                 foreach (var it in found)
                     results.Add(MakeAnimeResult(it, 100 - idx++));
 
-                if (results.Count == 0)
+                if (results.Count == 1)
                 {
                     results.Add(new Result
                     {
@@ -287,15 +327,6 @@ namespace KageAnime
                     });
                     return results;
                 }
-
-                results.Add(new Result
-                {
-                    Title = $"Открыть KageAnime (поиск: «{q}»)",
-                    SubTitle = "На главной сайта — вкладка «Поиск»",
-                    IcoPath = "icon.png",
-                    Score = 10,
-                    Action = c => { AppUrl.OpenInBrowserTab(); return true; }
-                });
             }
             catch (Exception e)
             {
