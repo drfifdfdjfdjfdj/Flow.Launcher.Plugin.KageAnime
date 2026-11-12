@@ -127,9 +127,10 @@ namespace KageAnime
             var alt = Str(it, "alt_title");
             if (!string.IsNullOrWhiteSpace(alt)) parts.Add(alt);
             var year = Str(it, "year");
-            if (!string.IsNullOrWhiteSpace(year)) parts.Add(year);
+            if (!string.IsNullOrWhiteSpace(year) && year != "0") parts.Add(year);
             var score = Str(it, "score");
-            if (!string.IsNullOrWhiteSpace(score)) parts.Add("★ " + score);
+            if (double.TryParse(score, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var sv) && sv > 0)
+                parts.Add("★ " + sv.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture));
             var kind = Str(it, "kind");
             if (!string.IsNullOrWhiteSpace(kind))
             {
@@ -155,7 +156,18 @@ namespace KageAnime
             if (string.IsNullOrWhiteSpace(thumb)) thumb = Str(it, "image");
             if (string.IsNullOrWhiteSpace(thumb)) return "icon.png";
             var dir = CacheDir();
-            var name = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(thumb))).Substring(0, 32) + ".img";
+            // Расширение из URL — Flow/WPF не всегда декодирует файлы без известного расширения (.img давал пустые иконки)
+            var ext = ".jpg";
+            try
+            {
+                var lp = new Uri(thumb).AbsolutePath.ToLowerInvariant();
+                if (lp.EndsWith(".png")) ext = ".png";
+                else if (lp.EndsWith(".webp")) ext = ".webp";
+                else if (lp.EndsWith(".gif")) ext = ".gif";
+                else if (lp.EndsWith(".jpeg")) ext = ".jpeg";
+            }
+            catch { }
+            var name = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(thumb))).Substring(0, 32) + ext;
             var path = Path.Combine(dir, name);
             if (File.Exists(path) && DateTime.UtcNow - File.GetLastWriteTimeUtc(path) < TimeSpan.FromDays(7))
                 return path;
