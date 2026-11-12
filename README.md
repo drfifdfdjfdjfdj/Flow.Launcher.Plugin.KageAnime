@@ -13,10 +13,9 @@
 
 ## Установка
 
-Из Plugin Store Flow Launcher: `pm install KageAnime`
-
-Вручную: скачайте zip со [страницы релизов](../../releases) и распакуйте в
-`%APPDATA%\FlowLauncher\Plugins\KageAnime`, затем перезапустите Flow.
+Скачайте [Flow.Launcher.Plugin.KageAnime.zip](../../releases/latest) со страницы
+релизов, распакуйте в `%APPDATA%\FlowLauncher\Plugins\KageAnime` и перезапустите Flow.
+В Plugin Store появится после апрува.
 
 ## Технически
 
