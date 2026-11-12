@@ -5,6 +5,8 @@ on:
     branches: [ main ]
     paths-ignore:
       - .github/workflows/*
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: windows-latest
