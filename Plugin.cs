@@ -17,7 +17,7 @@ namespace KageAnime
     public class KageAnime : IAsyncPlugin
     {
         private const string ApiBase = "https://anime.hitler.site";
-        private const string AppUrl = "https://mobile.hitler.site/app/";
+        private const string AppUrl = "https://anime.hitler.site/";
 
         private PluginInitContext _context;
         private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
@@ -152,6 +152,7 @@ namespace KageAnime
         private string Icon(JsonElement it)
         {
             var thumb = Str(it, "thumbnail");
+            if (string.IsNullOrWhiteSpace(thumb)) thumb = Str(it, "image");
             if (string.IsNullOrWhiteSpace(thumb)) return "icon.png";
             var dir = CacheDir();
             var name = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(thumb))).Substring(0, 32) + ".img";
@@ -170,11 +171,20 @@ namespace KageAnime
             }
         }
 
+        private static string SiteLink(string id)
+        {
+            // Портал (anime.hitler.site) принимает deep-link через хеш: #shiki:12345 / #anime-12345
+            if (string.IsNullOrWhiteSpace(id)) return AppUrl;
+            var sid = id.Trim();
+            if (sid.StartsWith("shiki:", StringComparison.OrdinalIgnoreCase)) return $"{AppUrl}#{sid}";
+            return $"{AppUrl}#anime-{sid}";
+        }
+
         private Result MakeAnimeResult(JsonElement it, int score)
         {
             var id = Str(it, "id");
             var title = Str(it, "title");
-            var deepLink = $"{AppUrl}?anime={Uri.EscapeDataString(id)}";
+            var deepLink = SiteLink(id);
             return new Result
             {
                 Title = title,
@@ -229,14 +239,23 @@ namespace KageAnime
 
                 if (q.Equals("random", StringComparison.OrdinalIgnoreCase))
                 {
-                    results.Add(new Result
+                    try
                     {
-                        Title = "Случайное аниме",
-                        SubTitle = "Открыть рандом на KageAnime",
-                        IcoPath = "icon.png",
-                        Score = 100,
-                        Action = c => { AppUrl.OpenInBrowserTab(); return true; }
-                    });
+                        var json = await Http.GetStringAsync($"{ApiBase}/api/anime/random").ConfigureAwait(false);
+                        using var doc = JsonDocument.Parse(json);
+                        results.Add(MakeAnimeResult(doc.RootElement.Clone(), 100));
+                    }
+                    catch
+                    {
+                        results.Add(new Result
+                        {
+                            Title = "Не удалось получить случайное аниме",
+                            SubTitle = "Открыть KageAnime",
+                            IcoPath = "icon.png",
+                            Score = 100,
+                            Action = c => { AppUrl.OpenInBrowserTab(); return true; }
+                        });
+                    }
                     return results;
                 }
 
@@ -259,15 +278,11 @@ namespace KageAnime
 
                 results.Add(new Result
                 {
-                    Title = $"Искать «{q}» на сайте KageAnime",
-                    SubTitle = "Открыть страницу поиска",
+                    Title = $"Открыть KageAnime (поиск: «{q}»)",
+                    SubTitle = "На главной сайта — вкладка «Поиск»",
                     IcoPath = "icon.png",
                     Score = 10,
-                    Action = c =>
-                    {
-                        $"{AppUrl}search/{Uri.EscapeDataString(q)}".OpenInBrowserTab();
-                        return true;
-                    }
+                    Action = c => { AppUrl.OpenInBrowserTab(); return true; }
                 });
             }
             catch (Exception e)
