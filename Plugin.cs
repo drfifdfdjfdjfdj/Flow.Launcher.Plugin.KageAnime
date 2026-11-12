@@ -19,7 +19,9 @@ namespace KageAnime
         private const string ApiBase = "https://anime.hitler.site";
         private const string AppUrl = "https://anime.hitler.site/";
 
-        private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+        private static readonly HttpClient Http = new HttpClient(
+            new HttpClientHandler { AutomaticDecompression = System.Net.DecompressionMethods.All }
+        ) { Timeout = TimeSpan.FromSeconds(8) };
         private readonly Dictionary<string, (DateTime at, string json)> _cache = new();
         private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
         private const int CacheCap = 300;
@@ -203,12 +205,31 @@ namespace KageAnime
             var path = PosterPath(thumb);
             if (File.Exists(path) && DateTime.UtcNow - File.GetLastWriteTimeUtc(path) < TimeSpan.FromDays(7))
                 return;
+            // Постеры качаем с коротким таймаутом: висящий CDN не должен тормозить выдачу
+            using var cts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(token);
+            cts.CancelAfter(TimeSpan.FromSeconds(4));
             try
             {
-                var bytes = await Http.GetByteArrayAsync(thumb, token).ConfigureAwait(false);
+                var bytes = await Http.GetByteArrayAsync(thumb, cts.Token).ConfigureAwait(false);
                 File.WriteAllBytes(path, bytes);
             }
             catch { }
+        }
+
+        // Фоновая догрузка постеров БЕЗ ожидания: результаты отдаём мгновенно
+        // с тем, что уже в кеше (или icon.png), а свежие постеры подтянутся
+        // к следующему кейстроку. Раньше await всех 9 постеров давал 5-12с.
+        private static void PrefetchPostersBackground(System.Collections.Generic.IEnumerable<JsonElement> items, System.Threading.CancellationToken token)
+        {
+            List<string> thumbs;
+            try { thumbs = items.Select(ThumbOf).Where(t => !string.IsNullOrWhiteSpace(t)).Distinct().ToList(); }
+            catch { return; }
+            if (thumbs.Count == 0) return;
+            _ = System.Threading.Tasks.Task.Run(async () =>
+            {
+                try { await Task.WhenAll(thumbs.Select(t => PrefetchPosterAsync(t, token))).ConfigureAwait(false); }
+                catch { }
+            });
         }
 
         private string Icon(JsonElement it)
@@ -218,8 +239,8 @@ namespace KageAnime
             var path = PosterPath(thumb);
             if (File.Exists(path))
                 return path;
-            // Только кеш: синхронный download из QueryAsync фризил UI-поток Flow.
-            // Префетч (Task.WhenAll) уже скачал всё заранее; не успел — icon.png.
+            // Только кеш: результаты отдаём мгновенно, постеры греются фоном.
+            // Не успел скачаться — icon.png, появится к следующему запросу.
             return "icon.png";
         }
 
@@ -275,8 +296,8 @@ namespace KageAnime
                 if (q.Equals("ongoing", StringComparison.OrdinalIgnoreCase))
                 {
                     var ongoing = await OngoingAsync(9, token).ConfigureAwait(false);
-                    // Постеры — параллельно, а не по одному
-                    await Task.WhenAll(ongoing.Select(it => PrefetchPosterAsync(ThumbOf(it), token))).ConfigureAwait(false);
+                    // Постеры — фоном, результаты сразу
+                    PrefetchPostersBackground(ongoing, token);
                     var i = 0;
                     foreach (var it in ongoing)
                         results.Add(MakeAnimeResult(it, 100 - i++));
@@ -299,7 +320,7 @@ namespace KageAnime
                         var json = await Http.GetStringAsync($"{ApiBase}/api/anime/random", token).ConfigureAwait(false);
                         using var doc = JsonDocument.Parse(json);
                         var rel = doc.RootElement.Clone();
-                        await PrefetchPosterAsync(ThumbOf(rel), token).ConfigureAwait(false);
+                        PrefetchPostersBackground(new[] { rel }, token);
                         results.Add(MakeAnimeResult(rel, 100));
                     }
                     catch
@@ -329,8 +350,8 @@ namespace KageAnime
                 });
 
                 var found = await SearchAsync(q, 9, token).ConfigureAwait(false);
-                // Постеры — параллельно, а не по одному
-                await Task.WhenAll(found.Select(it => PrefetchPosterAsync(ThumbOf(it), token))).ConfigureAwait(false);
+                // Постеры — фоном, результаты сразу (раньше await давал 5-12с)
+                PrefetchPostersBackground(found, token);
                 var idx = 0;
                 foreach (var it in found)
                     results.Add(MakeAnimeResult(it, 100 - idx++));
