@@ -1,0 +1,12 @@
+{
+  "ID": "7ae4ef01-9a1a-4752-a3be-0e8b03b11748",
+  "ActionKeyword": "ka",
+  "Name": "KageAnime",
+  "Description": "Search anime on KageAnime and open the player directly: russian/english titles, posters, ratings, ongoing list",
+  "Author": "KageAnime",
+  "Version": "1.0.0",
+  "Language": "csharp",
+  "Website": "https://anime.hitler.site",
+  "IcoPath": "icon.png",
+  "ExecuteFileName": "KageAnime.dll"
+}
